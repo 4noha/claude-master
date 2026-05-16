@@ -1,0 +1,8 @@
+{
+  "name": "spinner-verb-leak",
+  "source_pid": "55649",
+  "byte_range": [0, 80000],
+  "width": 164,
+  "height": 50,
+  "note": "Spinner verb (大量) が footer に固定されることを検証"
+}

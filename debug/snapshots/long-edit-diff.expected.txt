@@ -1,0 +1,133 @@
+=== cycle 1 (offset=0 fed=4096) ===
+FOOTER:
+        276 -    "You've hit your limit", "What do you want to do",
+        277 -    "Enter to confirm", "Esc to cancel",
+        278 -    "Stop and wait for limit", "Upgrade your plan",
+        279 -    # spinner 直下に出る Tip 行（"⎿ Tip: Use /btw to ..."）。
+        280 -    # /btw を含むのは Tip 専用なので tool 結果との区別になる
+        281 -    "Tip: Use /btw", "/btw to ask",
+        282 -    # 入力エリアに出るキューメッセージ
+        283 -    "Press up to edit queued",
+        284 -    # Ctrl-C 1 回押下時に status 行へ一時的に出るメッセージ
+        285 -    "Press Ctrl-C again",
+        286 -    # 権限確認ダイアログ（"Do you want to proceed?" / 選択肢行 / ヒント行）
+        287 -    "Do you want to proceed?",
+        288 -    "don't ask again for:",
+        289 -    "Tab to amend", "to explain",
+        290 -    "to view diff",
+        291 -)
+        292 -
+        293 -# 進行中 status の末尾パターン（"… (ctrl+o to expand)" や "…" で終わる）
+CURSOR: (17, 114)
+
+=== cycle 2 (offset=4096 fed=4096) ===
+LOG:
+  �認ダイアログ
+FOOTER: (unchanged)
+
+=== cycle 3 (offset=8192 fed=4096) ===
+LOG:
+        276 -    "You've hit your limit", "What do you want to do",
+        277 -    "Enter to confirm", "Esc to cancel",
+        278 -    "Stop and wait for limit", "Upgrade your plan",
+        279 -    # spinner 直下に出る Tip 行（"⎿ Tip: Use /btw to ..."）。
+        280 -    # /btw を含むのは Tip 専用なので tool 結果との区別になる
+        281 -    "Tip: Use /btw", "/btw to ask",
+        282 -    # 入力エリアに出るキューメッセージ
+        283 -    "Press up to edit queued",
+        284 -    # Ctrl-C 1 回押下時に status 行へ一時的に出るメッセージ
+        285 -    "Press Ctrl-C again",
+        286 -    # 権限確認ダイアログ（"Do you want to proceed?" / 選択肢行 / ヒント行）
+        287 -    "Do you want to proceed?",
+        288 -    "don't ask again for:",
+        289 -    "Tab to amend", "to explain",
+        290 -    "to view diff",
+        291 -)
+        292 -
+        293 -# 進行中 status の末尾パターン（"… (ctrl+o to expand)" や "…" で終わる）
+        294 -_TRANSIENT_TAIL_RE = re.compile(r"…\s*(\([^)]*\))?\s*$")
+        295 -
+        296 -
+        297 -def _is_footer_text(text: str) -> bool:
+        298 -    """text が footer chrome（区切り・status・入力プロンプト・spinner 等）か判定。"""
+        299 -    s = text.strip()
+        300 -    if not s:
+        301 -        return False
+        302 -    # 水平罫線
+        303 -    if all(c in "─━═╌╍┄┈" or c == " " for c in s):
+        304 -        return True
+        305 -    # 入力プロンプト
+        306 -    if s.startswith("❯"):
+        307 -        return True
+        308 -    # spinner 先頭文字
+        309 -    if s[0] in _FOOTER_SPINNER_CHARS:
+        310 -        return True
+        311 -    # status キーワード
+FOOTER: (unchanged)
+
+=== cycle 4 (offset=12288 fed=4096) ===
+LOG:
+        312 -    for kw in _FOOTER_KEYWORDS_TEXT:
+        313 -        if kw in s:
+        314 -            return True
+        315 -    # 末尾が "…" / "… (...)" の進行中ステータス（"Scampering…", "Reading 1 file…" 等）
+        316 -    if _TRANSIENT_TAIL_RE.search(s):
+        317 -        return True
+        318 -    return False
+        319 -
+        320 -
+        321 -class TuiEmulator:
+        322 -    """pyte で仮想スクリーンを保持し、log 行と footer 行を取り出す。
+        323 -
+        324 -    Claude Code は cursor 絶対位置でフレームを部分描画するため、ストリームから
+        325 -    log/footer を直接抽出しても断片しか得られない。pyte で実画面状態を再構成し、
+        326 -    history.top（スクロールアウト確定）と可視領域から本文行/フッター行を取り出す。
+        327 -    """
+        328 -
+        329 -    def __init__(self, rows: int = 24, cols: int = 80) -> None:
+FOOTER: (unchanged)
+
+=== cycle 5 (offset=16384 fed=4096) ===
+LOG:
+        330 -        if not _PYTE_AVAILABLE:
+        331 -            raise RuntimeError("pyte not installed")
+        332 -        self._rows = rows
+        333 -        self._cols = cols
+        334 -        self._screen = pyte.HistoryScreen(cols, rows, history=2000, ratio=0.5)
+        335 -        self._stream = pyte.ByteStream(self._screen)
+        336 -        self._prev_history_count = 0
+        337 -        self._emitted_visible: dict[int, bytes] = {}  # 可視 row_idx -> 直近 emit 内容
+        338 -        # コンテキスト圧縮等でスクリーンクリアが発生すると _emitted_visible が全消去され、
+        339 -        # 再描画された内容が重複 emit される。これを防ぐためコンテンツ基準の直近 emit キャッシュを保持する。
+        340 -        self._recent_emitted: collections.deque[bytes] = collections.deque(maxlen=500)
+        341 -        self._last_footer_bytes: list[bytes] = []  # 直近の非空 footer をキャッシュ
+        342 -        # 使用量バナーは usage と reset が別行・別フレームで現れることがあるので
+        343 -        # それぞれを最後に観測した値として保持し、累積で返す
+        344 -        self._last_usage_percent: int | None = None
+        345 -        self._last_reset_time: str | None = None
+        346 -        self._last_reset_tz: str | None = None
+        347 -
+FOOTER: (unchanged)
+
+=== cycle 6 (offset=20480 fed=2520) ===
+LOG:
+        348 -    def resize(self, rows: int, cols: int) -> None:
+        349 -        if rows == self._rows and cols == self._cols:
+        350 -            return
+        351 -        try:
+        352 -            self._screen.resize(rows, cols)
+        353 -        except Exception as e:
+        354 -            _log.exception("pyte resize error: %s", e)
+        355 -        self._rows = rows
+        356 -        self._cols = cols
+        357 -        self._emitted_visible.clear()
+        358 -
+        359 -    def feed(self, data: bytes) -> tuple[list[bytes], list[bytes]]:
+        360 -        try:
+        361 -            self._stream.feed(data)
+        362 -        except Exception as e:
+        363 -            _log.exception("pyte feed error: %s", e)
+        364 -            return [], []
+        365 -        return self._extract()
+        366 -
+FOOTER: (unchanged)

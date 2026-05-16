@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# claude-wrap: Claude Code を PTY プロキシ経由で起動するラッパー。
+# tmux からの双方向接続を可能にする。
+#
+# セットアップ:
+#   alias claude='claude-wrap'  # ~/.zshrc に追加
+#
+# または PATH の優先度を上げて配置:
+#   ln -s /path/to/claude-master/claude-wrap ~/bin/claude
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PYTHON="$SCRIPT_DIR/.venv/bin/python"
+
+if [ ! -f "$PYTHON" ]; then
+    echo "エラー: .venv が見つかりません。先に 'uv venv && uv pip install psutil' を実行してください" >&2
+    exit 1
+fi
+
+exec "$PYTHON" "$SCRIPT_DIR/pty_proxy.py" "$@"

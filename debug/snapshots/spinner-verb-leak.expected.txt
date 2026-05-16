@@ -1,0 +1,646 @@
+=== cycle 1 (offset=0 fed=4096) ===
+LOG:
+   ▐▛███▜▌   Claude Code v2.1.126
+  ▝▜█████▛▘  Sonnet 4.6 · Claude Max
+    ▘▘ ▝▝    ~/works/claude‐master
+  
+  ❯  /model
+  
+  ⏺ /model is a built-in Claude Code command — it should open the model selector UI directly in the CLI. If it was sent as
+    a chat message instead of being intercepted, try typing it fresh at the prompt rather than as a follow-up message.
+  
+    Current model: claude-sonnet-4-6
+  
+    Available models:
+FOOTER: (empty)
+
+=== cycle 2 (offset=4096 fed=4096) ===
+LOG:
+    - claude-opus-4-7 — most capable
+    - claude-sonnet-4-6 — current (balanced)
+    - claude-haiku-4-5-20251001 — fastest/cheapest
+  
+    You can also switch with /config or set model in your settings.json.
+  
+  ❯ プランの上限が近づいたら開発を中断してリセットタイミングにリスケジュールする機能を設計してください
+  
+  ⏺ 現在のコードベースを確認してから設計を提示します。
+  
+    Searched for 2 patterns, read 1 file, listed 1 directory (ctrl+o to expand)
+  
+  ⏺ 既存の実装を把握しました。pty_proxy.py が既に usage_percent と reset_time を <pid>.status.json
+    に書き出しており、monitor.py がそれを読んでいます。あとは「その数値をトリガーに行動する」層が欠けているだけです。
+  
+    ---
+    設計
+  
+    全体フロー
+  
+    pty_proxy.py
+      → <pid>.status.json に usage_percent / reset_time を書き出し済み
+  
+    monitor.py run_loop()
+      └─ LimitWatcher.check(status)  ← 新規
+           ├─ APPROACHING (≥80%)  → tmux ウィンドウ名に ⚠ 表示
+           ├─ INTERRUPT   (≥90%)  → Claude セッションに ESC + メッセージ注入
+           └─ REACHED    (100%)  → 同上 + ResumeScheduler.schedule(reset_datetime)
+  
+    ResumeScheduler
+      ├─ monitor 内ループで管理 (シンプル・デフォルト)
+      └─ launchd plist 書き出し  (monitor 再起動耐性)
+            → reset 時刻に `socket_client.py` 経由でセッション再開メッセージ送信
+    新規モジュール: limit_watcher.py
+  
+    @dataclass
+    class LimitEvent:
+        session_key: str
+        level: Literal["approaching", "interrupt", "reached"]
+        usage_percent: int
+        reset_time_str: str   # "8:30 pm"
+        reset_tz: str         # "UTC+9"
+  
+    class LimitWatcher:
+        APPROACHING_THRESHOLD = 80
+        INTERRUPT_THRESHOLD   = 90
+  
+        def __init__(self):
+            self._notified: dict[str, str] = {}  # key → last level notified
+  
+        def check(self, key: str, status: dict) -> LimitEvent | None:
+            pct = status.get("usage_percent")
+            if pct is None:
+                return None
+            level = (
+                "reached"    if pct >= 100 else
+                "interrupt"  if pct >= self.INTERRUPT_THRESHOLD else
+                "approaching" if pct >= self.APPROACHING_THRESHOLD else
+                None
+            )
+            if level and self._notified.get(key) != level:
+                self._notified[key] = level
+                return LimitEvent(key, level, pct,
+                                  status.get("reset_time",""), status.get("reset_tz",""))
+            return None
+FOOTER: (unchanged)
+
+=== cycle 3 (offset=8192 fed=4096) ===
+LOG:
+    ポイント: 同じ level は1回だけ発火。usage が下がった場合（プラン更新後）は自動リセット。
+    新規モジュール: resume_scheduler.py
+  
+    class ResumeScheduler:
+        def parse_reset_datetime(self, time_str: str, tz_str: str) -> datetime | None:
+            # "8:30 pm" + "UTC+9" → 今日または明日の aware datetime
+            ...
+  
+        def schedule(self, session_key: str, reset_at: datetime, socket_path: str) -> None:
+            # 方式A: monitor ループ内で管理（デフォルト）
+            self._pending[session_key] = (reset_at, socket_path)
+  
+        def due(self, now: datetime) -> list[str]:
+            """reset_at を過ぎたセッション key を返し pending から削除"""
+  
+        # 方式B: launchd plist (monitor 再起動耐性が必要な場合)
+        def schedule_launchd(self, session_key: str, reset_at: datetime, cmd: list[str]) -> None:
+            plist = _build_plist(session_key, reset_at, cmd)
+            path = Path.home() / "Library/LaunchAgents" / f"com.claude-master.resume.{session_key}.plist"
+            path.write_text(plist)
+            subprocess.run(["launchctl", "load", str(path)], check=True)
+    monitor.py run_loop への統合
+  
+    async def run_loop(manager: TmuxManager) -> None:
+        watcher   = LimitWatcher()
+        scheduler = ResumeScheduler()
+        known: dict[str, ClaudeSession] = {}
+  
+        while True:
+            current = {s.key: s for s in scan()}
+            # ... 既存のセッション追加/削除処理 ...
+  
+            # --- 上限監視 (新規) ---
+            for key, session in current.items():
+                status = _read_session_status(session.pid)
+                event  = watcher.check(key, status)
+                if event:
+                    _handle_limit_event(event, session, manager, scheduler)
+  
+            # --- リセット待ち再開 (新規) ---
+            for key in scheduler.due(datetime.now()):
+                session = current.get(key)
+                if session:
+                    _resume_session(session)
+  
+            known = current
+            _write_status(list(current.values()), manager)
+FOOTER: (unchanged)
+
+=== cycle 4 (offset=12288 fed=4096) ===
+LOG:
+            await asyncio.sleep(POLL_INTERVAL)
+    セッション割り込みアクション _handle_limit_event
+  
+    level = approaching
+      → tmux rename-window: "myproject [⚠80%]"
+      → ログ出力のみ（作業は続行）
+  
+    level = interrupt
+      → socket_client 経由で ESC 送信（生成中断）
+      → 続けて以下のメッセージをセッションに注入:
+        "⚠ Usage limit at 90%. Reset: 8:30 pm JST.
+         現在の作業状態を要約して、続きの指示書を残してください。"
+      → ResumeScheduler.schedule(reset_at, socket_path)
+  
+    level = reached
+      → interrupt と同じ動作
+      → tmux rename-window: "myproject [PAUSED]"
+  
+    ESC + メッセージ注入は socket_client.py の既存 API で実現可能（send_input）。
+    再開アクション _resume_session
+  
+    reset_at 到達時:
+      → socket_client 経由で以下を送信:
+        "プラン制限がリセットされました。中断前の作業を再開してください。"
+      → tmux rename-window を "[⚠]" 表示から元に戻す
+      → スケジュールから削除
+    実装順序
+  
+    1. limit_watcher.py — threshold 判定とイベント生成（独立して単体テスト可）
+    2. resume_scheduler.py — reset_time パース + pending 管理（方式A から始める）
+    3. monitor.py — run_loop への統合と _handle_limit_event / _resume_session
+    4. オプション: launchd 方式B（monitor プロセスが落ちても再開できる堅牢版）
+    未解決の検討事項
+  
+    ┌─────────────────────────────────────────┬───────────────────────────────────────────────────────────────────┐
+    │                  課題                   │                              選択肢                               │
+    ├─────────────────────────────────────────┼───────────────────────────────────────────────────────────────────┤
+    │ reset_time の日付をどう決める？         │ 「今日か、今より未来の次の発生」として計算。深夜0時跨ぎに注意     │
+    ├─────────────────────────────────────────┼───────────────────────────────────────────────────────────────────┤
+    │ usage が90%→100%と段階的に来たとき      │ level ごとに1回のみ発火するので自然に処理される                   │
+    ├─────────────────────────────────────────┼───────────────────────────────────────────────────────────────────┤
+FOOTER: (unchanged)
+
+=== cycle 5 (offset=16384 fed=4096) ===
+LOG:
+    │ monitor が再起動したら pending が消える │ 方式A は消える。重要なら方式B (launchd) か pending を json 永続化 │
+    │ 複数セッションが同時に限界到達          │ 各 key 独立に処理するので問題なし                                 │
+    └─────────────────────────────────────────┴───────────────────────────────────────────────────────────────────┘
+  
+    実装に進みますか？どこから着手するか確認をお願いします。
+  
+  ❯ 方針やタスクをREADMEかどこかにメモして実装してください
+  
+  ⏺ まず現状を確認してから作業します。
+  
+    Read 3 files (ctrl+o to expand)
+  
+  ⏺ pty_proxy の socket protocol と tmux_manager も確認します。
+  
+    Read 2 files (ctrl+o to expand)
+  
+  ⏺ 全体像を把握しました。実装に入ります。まず README にタスクを記録してから順に実装します。
+  
+    Read 1 file (ctrl+o to expand)
+  
+  ⏺ 全ファイルを把握しました。並行して実装します。
+  
+  ⏺ Update(README.md)
+    ⎿  Added 47 lines
+        143  - `tmux`（`brew install tmux`）
+        144  - Claude Code CLI（`~/.local/bin/claude`）
+        145
+        146 +## プラン上限監視・自動リスケジュール
+        147 +
+        148 +`pty_proxy` が抽出した `usage_percent` / `reset_time` を監視し、上限に近づいたらセッションを中断・リセ
+            +ット時刻に自動再開する機能。
+        149 +
+        150 +### 動作フロー
+        151 +
+        152 +```
+FOOTER: (unchanged)
+
+=== cycle 6 (offset=20480 fed=4096) ===
+LOG:
+        153 +pty_proxy.py → <pid>.status.json (usage_percent, reset_time)
+        154 +                        ↓
+        155 +monitor.py run_loop → LimitWatcher.check()
+        156 +  ├─ ≥80%  → tmux ウィンドウ名に [⚠80%] 表示（作業継続）
+        157 +  ├─ ≥90%  → ESC + 要約依頼メッセージをセッションに注入
+        158 +  │           ResumeScheduler に reset_at を登録
+        159 +  └─ 100%  → 同上 + ウィンドウ名を [PAUSED] に変更
+        160 +
+        161 +reset_at 到達後（monitor ループ内で検出）
+        162 +  → "プランがリセットされました。作業を再開してください。" を注入
+        163 +  → ウィンドウ名を元に戻す
+        164 +```
+        165 +
+        166 +### 設定
+        167 +
+        168 +| 環境変数 | デフォルト | 説明 |
+        169 +|----------|-----------|------|
+        170 +| `LIMIT_WARN_PERCENT` | `80` | 警告表示を出す使用率(%) |
+        171 +| `LIMIT_INTERRUPT_PERCENT` | `90` | セッション中断を行う使用率(%) |
+        172 +
+        173 +### 実装ファイル
+        174 +
+FOOTER: (unchanged)
+
+=== cycle 7 (offset=24576 fed=4096) ===
+LOG:
+        175 +| ファイル | 役割 |
+        176 +|----------|------|
+        177 +| `limit_watcher.py` | しきい値判定・LimitEvent 発行 |
+        178 +| `resume_scheduler.py` | reset_time パース・pending 管理・ソケット送信 |
+        179 +| `monitor.py` | LimitWatcher/ResumeScheduler を run_loop に統合 |
+        180 +| `tmux_manager.py` | `rename_window()` を追加 |
+        181 +| `config.py` | `LIMIT_WARN_PERCENT` / `LIMIT_INTERRUPT_PERCENT` を追加 |
+        182 +
+        183 +### 実装タスク（完了済み）
+        184 +
+        185 +- [x] `config.py` にしきい値定数を追加
+        186 +- [x] `limit_watcher.py` 新規作成
+        187 +- [x] `resume_scheduler.py` 新規作成（pending は JSON 永続化）
+        188 +- [x] `tmux_manager.py` に `rename_window()` を追加
+        189 +- [x] `monitor.py` に統合（`_handle_limit_event` / `_resume_sessions`）
+        190 +
+        191 +---
+        192 +
+        193  ## ライセンス
+        194
+        195  MIT
+  
+  ⏺ Update(config.py)
+    ⎿  Added 3 lines
+         8  LOG_FILE: str = os.path.expanduser("~/.claude-master.log")
+         9  STATUS_FILE: str = os.path.expanduser("~/.claude-master.status.json")
+FOOTER: (unchanged)
+
+=== cycle 8 (offset=28672 fed=4096) ===
+LOG:
+        10  PID_FILE: str = os.path.expanduser("~/.claude-master.pid")
+        11 +
+        12 +LIMIT_WARN_PERCENT: int = int(os.environ.get("LIMIT_WARN_PERCENT", "80"))
+        13 +LIMIT_INTERRUPT_PERCENT: int = int(os.environ.get("LIMIT_INTERRUPT_PERCENT", "90"))
+  
+  ⏺ Write(limit_watcher.py)
+    ⎿  Wrote 55 lines to limit_watcher.py
+        1 """上限監視: usage_percent のしきい値を超えたセッションを検出する。"""
+        2 from dataclasses import dataclass
+        3 from typing import Literal
+        4
+        5 from config import LIMIT_INTERRUPT_PERCENT, LIMIT_WARN_PERCENT
+        6
+        7 LimitLevel = Literal["approaching", "interrupt", "reached"]
+        8 _LEVEL_ORDER: dict[LimitLevel, int] = {"approaching": 0, "interrupt": 1, "reached": 2}
+        9
+       … +45 lines (ctrl+o to expand)
+  
+  ⏺ Write(resume_scheduler.py)
+    ⎿  Wrote 110 lines to resume_scheduler.py
+        1 """リセット時刻にセッションを再開するスケジューラー。
+        2
+        3 pending は JSON ファイルに永続化するため monitor 再起動後も再開が機能する。
+        4 """
+        5 import json
+        6 import re
+        7 import socket as _socket
+        8 from datetime import datetime, timedelta, timezone
+        9 from pathlib import Path
+FOOTER: (unchanged)
+
+=== cycle 9 (offset=32768 fed=4096) ===
+LOG:
+       … +100 lines (ctrl+o to expand)
+  
+  ⏺ 次に tmux_manager.py に rename_window を追加し、monitor.py を統合します。
+  
+  ⏺ Update(tmux_manager.py)
+    ⎿  Added 7 lines
+        81              f"--retry {shlex.quote(socket_path)}"
+        82          )
+        83
+        84 +    def rename_window(self, key: str, new_name: str) -> None:
+        85 +        old_name = self._key_to_window.get(key)
+        86 +        if old_name and old_name in self.list_windows():
+        87 +            new_name = new_name[:30]
+        88 +            _tmux("rename-window", "-t", f"{self.session}:{old_name}", new_name)
+        89 +            self._key_to_window[key] = new_name
+        90 +
+        91      def remove_window(self, key: str) -> None:
+        92          name = self._key_to_window.pop(key, None)
+        93          if name and name in self.list_windows():
+  
+  ⏺ 最後に monitor.py を統合します。
+  
+  ⏺ Update(monitor.py)
+    ⎿  Added 2 lines
+        17  from pathlib import Path
+        18
+        19  from config import LOG_FILE, PID_FILE, POLL_INTERVAL, STATUS_FILE
+        20 +from limit_watcher import LimitEvent, LimitWatcher
+FOOTER: (unchanged)
+
+=== cycle 10 (offset=36864 fed=4096) ===
+LOG:
+        21  from process_scanner import ClaudeSession, scan
+        22 +from resume_scheduler import ResumeScheduler, send_to_socket
+        23  from tmux_manager import TmuxManager
+        24
+        25  SESSIONS_DIR = Path.home() / ".claude-master" / "sessions"
+  
+  ⏺ Update(monitor.py)
+        24
+        25  SESSIONS_DIR = Path.home() / ".claude-master" / "sessions"
+        26
+        27 +_ESC = b"\x1b"
+        28 +_INTERRUPT_MSG = (
+        29 +    "\n⚠ Usage limit at {pct}% (resets: {reset}). "
+        30 +    "現在の作業状態を要約して一時停止してください。\n"
+        31 +)
+        32 +_RESUME_MSG = "プラン制限がリセットされました。中断前の作業を再開してください。\n"
+        33 +
+        34  logging.basicConfig(
+        35      filename=LOG_FILE,
+        36      level=logging.INFO,
+  
+  ⏺ Update(monitor.py)
+    ⎿  Added 51 lines
+         65      Path(STATUS_FILE).write_text(json.dumps(data, ensure_ascii=False, indent=2))
+         66
+         67
+         68 +def _handle_limit_event(
+         69 +    event: LimitEvent,
+         70 +    session: ClaudeSession,
+FOOTER: (unchanged)
+
+=== cycle 11 (offset=40960 fed=4096) ===
+LOG:
+         71 +    manager: TmuxManager,
+         72 +    scheduler: ResumeScheduler,
+         73 +) -> None:
+         74 +    pct = event.usage_percent
+         75 +    reset = f"{event.reset_time} {event.reset_tz}".strip()
+         76 +
+         77 +    if event.level == "approaching":
+         78 +        log.warning("使用量 %d%% に到達: %s", pct, session.key)
+         79 +        manager.rename_window(session.key, f"{session.short_dir}[⚠{pct}%]")
+         80 +        return
+         81 +
+         82 +    log.warning("使用量 %d%% — セッション中断: %s", pct, session.key)
+         83 +    sock_path = str(SESSIONS_DIR / f"{session.pid}.sock")
+         84 +    if Path(sock_path).exists():
+         85 +        msg = _INTERRUPT_MSG.format(pct=pct, reset=reset)
+         86 +        send_to_socket(sock_path, _ESC + msg.encode())
+         87 +        reset_at = scheduler.schedule(event, sock_path)
+         88 +        log.info("再開スケジュール登録: %s → %s", session.key, reset_at)
+FOOTER: (unchanged)
+
+=== cycle 12 (offset=45056 fed=4096) ===
+LOG:
+         89 +    manager.rename_window(session.key, f"{session.short_dir}[PAUSED]")
+         90 +
+         91 +
+         92 +def _resume_sessions(
+         93 +    scheduler: ResumeScheduler,
+         94 +    current: dict[str, ClaudeSession],
+         95 +    manager: TmuxManager,
+         96 +    watcher: LimitWatcher,
+         97 +) -> None:
+         98 +    for key, socket_path in scheduler.due(datetime.now()):
+         99 +        log.info("セッション再開: %s", key)
+        100 +        if Path(socket_path).exists():
+        101 +            send_to_socket(socket_path, _RESUME_MSG.encode())
+        102 +        watcher.clear(key)
+        103 +        session = current.get(key)
+        104 +        if session:
+        105 +            manager.rename_window(key, session.short_dir)
+        106 +
+        107 +
+        108  async def run_loop(manager: TmuxManager) -> None:
+        109      known: dict[str, ClaudeSession] = {}
+FOOTER: (unchanged)
+
+=== cycle 13 (offset=49152 fed=4096) ===
+LOG:
+        110 +    watcher = LimitWatcher()
+        111 +    scheduler = ResumeScheduler()
+        112
+        113      while True:
+        114          current = {s.key: s for s in scan()}
+       ...
+        121                  mode = "PTY proxy" if socket_path else "shell"
+        122                  log.info("新規セッション検出: pid=%d dir=%s window=%s mode=%s",
+        123                           session.pid, session.cwd, window, mode)
+        124 +            else:
+        125 +                status = _read_session_status(session.pid)
+        126 +                event = watcher.check(key, status)
+        127 +                if event:
+        128 +                    _handle_limit_event(event, session, manager, scheduler)
+        129
+        130          for key in list(known):
+        131              if key not in current:
+        132                  manager.remove_window(key)
+        133 +                watcher.clear(key)
+        134 +                scheduler.remove(key)
+        135                  log.info("セッション終了: key=%s", key)
+        136
+        137 +        _resume_sessions(scheduler, current, manager, watcher)
+        138 +
+        139          known = current
+        140          _write_status(list(current.values()), manager)
+        141
+  
+  ⏺ 構文エラーがないか確認します。
+  
+  ⏺ Bash(python -m py_compile limit_watcher.py resume_scheduler.py tmux_manager.py monitor.py config.py && echo "OK")
+    ⎿  OK
+    ⎿  Found 2 new diagnostic issues in 1 file (ctrl+o to expand)
+  
+  ⏺ 既存コードの警告で変更前からあったものです。問題ありません。
+  
+    動作全体を確認します。
+  
+  ⏺ Bash(python -c "
+        from limit_watcher import LimitWatcher, LimitEvent…)
+    ⎿  LimitWatcher: all tests passed
+FOOTER: (unchanged)
+
+=== cycle 14 (offset=53248 fed=4096) ===
+LOG:
+        import tempfile, os…)
+    ⎿  reset_at parsed: 2026-05-03 21:00:00+09:00
+       ResumeScheduler: all tests passed
+  
+  ⏺ 全テスト通過しました。最終的なファイル構成を確認します。
+  
+    Listed 1 directory (ctrl+o to expand)
+  
+  ⏺ 実装完了です。変更の概要：
+  
+    新規ファイル
+    - limit_watcher.py — 80%/90%/100% のしきい値判定。同レベルは重複発火しない。使用率が下がると履歴リセット
+    - resume_scheduler.py — reset_time を datetime に変換してパース、pending を JSON 永続化（monitor 再起動後も再開が機能）
+  
+    変更ファイル
+    - config.py — LIMIT_WARN_PERCENT=80 / LIMIT_INTERRUPT_PERCENT=90 を追加（環境変数でオーバーライド可）
+    - tmux_manager.py — rename_window(key, new_name) を追加
+    - monitor.py — run_loop に統合。新規セッションは検出のみ、既存セッションで毎ポーリング使用量チェック
+    - README.md — 機能説明とタスク一覧を追加
+  
+  ❯ 作業中で中断して再開するプロジェクトとClaude Codeの利用を現在していないプロジェクトを区別できる設定になっていますか？
+  
+  ⏺ コードを確認します。
+  
+    Searched for 2 patterns (ctrl+o to expand)
+  
+  ⏺ 区別できていません。 2つのギャップがあります。
+    ギャップ 1: プロセスが落ちると PAUSED 状態が消える
+  
+    monitor.py:134 で、セッション終了時に無条件で scheduler.remove(key) を呼んでいます。
+  
+    for key in list(known):
+        if key not in current:          # プロセスが消えた
+            manager.remove_window(key)
+            watcher.clear(key)
+            scheduler.remove(key)       # ← PAUSED 中でも pending が消える
+  
+    ユーザーがターミナルを閉じたり、プロセスがクラッシュすると「中断待ちプロジェクト」と「未使用プロジェクト」が区別できな
+    くなります。
+    ギャップ 2: 再開時にプロセスが死んでいたら何もできない
+FOOTER: (unchanged)
+
+=== cycle 15 (offset=57344 fed=4096) ===
+LOG:
+    resume_scheduler.py が保存しているのは socket_path だけです。プロセスが落ちているとソケットも消えているので
+    send_to_socket が失敗し、再開メッセージが届きません。
+  
+    session_id（--resume フラグ値）と cwd があれば claude --resume <session_id>
+    でプロセスを再起動できますが、今は保存していません。
+    修正方針
+  
+    ┌─────────────────────┬─────────────────────────────────────────────────────────────────────────────────────────────┐
+    │        箇所         │                                            変更                                             │
+    ├─────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────┤
+    │ resume_scheduler.py │ schedule() に cwd と session_id も保存するよう拡張                                          │
+    │ monitor.py          │ セッション終了時、scheduler._pending に残っているキーは remove しない                       │
+    │ _resume_sessions    │ ソケットが消えていたら claude --resume <session_id> を tmux                                 │
+    │                     │ ウィンドウで起動するフォールバック追加                                                      │
+    └─────────────────────┴─────────────────────────────────────────────────────────────────────────────────────────────┘
+  
+    修正しますか？
+  
+  ❯ お願いします
+    ⎿  Interrupted · What should Claude do instead?
+  
+  ❯ いや、Claude Codeのプロセスが落ちていたら何もしなくてよいです
+  
+  ⏺ 了解です。その前提だと現在の実装は正しい動作をしています。
+  
+    - PAUSED（プロセス生存中）: scheduler._pending に残る + ウィンドウ名が [PAUSED] → 再開待ちと識別できる
+FOOTER:
+  ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ❯
+  ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+    ⏵⏵ bypass permissions on
+CURSOR: (3, 26)
+
+=== cycle 16 (offset=61440 fed=4096) ===
+LOG:
+    - プロセス終了時: scheduler.remove(key) で pending も消え、ウィンドウも削除 →
+  
+    _resume_sessions 側も reset_at 到達前にプロセスが落ちていれば scheduler.remove(key) がすでに呼ばれているので due()
+        'pty_proxy|claude-wrap|55018' | grep -v grep)
+    ⎿  /Users/4noha/.claude-master/sessions/44106.sock
+       /Users/4noha/.claude-master/sessions/45958.sock
+  
+  ⏺ Bash(ls ~/.claude-master/sessions/*.sock 2>/dev/null | head && echo "---" && ps aux | grep -E 'pty_proxy|claude-wrap|55018' | grep -v grep)
+    ⎿  Error: Exit code 1
+         File "<string>", line 1, in <module>
+  
+  ⏺ Bash(.venv/bin/python -c "import pyte; print('pyte OK', pyte.__version__)")
+       53927
+FOOTER: (unchanged)
+
+=== cycle 17 (offset=65536 fed=4096) ===
+LOG:
+    - プロセス終了時: scheduler.remove(key) で pending も消え、ウィンドウも削除 → 「未使用」と同じ扱いになる（これが期待通り）
+  
+    _resume_sessions 側も reset_at 到達前にプロセスが落ちていれば scheduler.remove(key) がすでに呼ばれているので due() には出てきません。追加の修正は不要です。
+  
+  ❯ ダッシュボードをみてもリミットの表示を確認できません。これは一瞬しか出ないものですか？内部的には把握していますか？例えばかなり長い間いま70%を超えています
+  
+  ⏺ ダッシュボードのコードと status.json の中身を確認します。
+  
+    Read 1 file, listed 1 directory (ctrl+o to expand)
+  
+       /Users/4noha/.claude-master/sessions/44859.sock
+  
+       … +13 lines (ctrl+o to expand)
+  
+    Read 1 file (ctrl+o to expand)
+  
+  ⏺ usage_percent が書き込まれていません。regex が当たっているか確認します。
+  
+    Read 1 file, listed 1 directory (ctrl+o to expand)
+  
+       Traceback (most recent call last):
+         File "<string>", line 1, in <module>
+       AttributeError: module 'pyte' has no attribute '__version__'
+  
+    Listed 1 directory (ctrl+o to expand)
+  
+  ⏺ Bash(.venv/bin/python -c "import pyte; print('pyte OK')" && ls ~/.claude-master/logs/ | tail -5)
+FOOTER:
+  ✳ Cogitating…
+  
+  
+  ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ───────
+  ❯
+  ───────────────────────────────────────────────────────────────────────────────────────────────────────────
+CURSOR: (6, 107)
+
+=== cycle 18 (offset=69632 fed=4096) ===
+LOG:
+       53590
+       … +3 lines (ctrl+o to expand)
+  
+    Searched for 2 patterns, listed 1 directory (ctrl+o to expand)
+         てください
+                                                                                                                                                           ● high · /e
+FOOTER:
+  ✳ Cogitating…
+  
+  
+  ✳─Cogitating…───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ───────
+  ❯
+  ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ───────
+    ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt
+CURSOR: (6, 0)
+
+=== cycle 19 (offset=73728 fed=4096) ===
+FOOTER:
+  ✳ Cogitating…
+  
+  
+  ✻─Cogitating…─(5s · thinking)───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ───────
+  ❯
+  ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ───────
+    ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt
+CURSOR: (3, 28)
+
+=== cycle 20 (offset=77824 fed=2176) ===
+FOOTER:
+  ✳ Cogitating…
+  
+  
+  ✻─Cogitating…─(6s · ↓ 88 tokens · thought for 3s)───────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ───────
+  ❯
+  ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ───────
+    ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt
+CURSOR: (3, 0)

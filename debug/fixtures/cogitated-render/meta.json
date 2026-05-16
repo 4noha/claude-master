@@ -1,0 +1,8 @@
+{
+  "name": "cogitated-render",
+  "source_pid": "76406",
+  "byte_range": [250000, 360000],
+  "width": 164,
+  "height": 50,
+  "note": "Cogitated for X 行が含まれる範囲。リサイズなし。"
+}

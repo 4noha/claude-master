@@ -1,0 +1,8 @@
+{
+  "name": "context-compact",
+  "source_pid": "90943",
+  "byte_range": [125000, 165000],
+  "width": 164,
+  "height": 50,
+  "note": "/compact 系の Context low / Compact 通知のフッター挙動"
+}

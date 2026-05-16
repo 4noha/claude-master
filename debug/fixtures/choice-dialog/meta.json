@@ -1,0 +1,8 @@
+{
+  "name": "choice-dialog",
+  "source_pid": "76406",
+  "byte_range": [280000, 320000],
+  "width": 164,
+  "height": 50,
+  "note": "本物の選択肢ダイアログ (Do you want to proceed? / 1.Yes 2.Yes,and don't ask 3.No) と矢印選択"
+}

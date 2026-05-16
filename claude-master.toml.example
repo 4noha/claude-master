@@ -1,0 +1,59 @@
+# claude-master 設定ファイルの例。
+#
+# これを ~/.claude-master.toml にコピーして編集してください
+# （位置を変えたい場合のみ環境変数 CLAUDE_MASTER_CONFIG でパス指定可）。
+#
+# 優先度: 環境変数 > このファイル > 既定値。
+# つまり同名の環境変数（大文字。例 SIZE_POLICY）があればそちらが勝ちます。
+# ファイルが無い/壊れている場合は黙って既定値で動作します。
+#
+# フラットなキー（下記）でも [claude-master] テーブルでも書けます。
+# 必要な行だけコメント解除すれば OK。未指定キーは既定値。
+
+# ── 監視デーモン ────────────────────────────────────────────
+# poll_interval = 1                 # プロセスポーリング間隔（秒）
+# tmux_session = "claude-master"    # 管理用 tmux セッション名
+# include_vscode = false            # VS Code 拡張セッションも対象にするか
+# auto_attach = false               # 起動時に tmux へ自動アタッチ
+# limit_warn_percent = 80           # 使用量警告しきい値（%）
+# limit_interrupt_percent = 90      # 使用量割り込みしきい値（%）
+
+# ── 画面サイズ方針 ──────────────────────────────────────────
+# client(既定)=tmux 基準 / host=生パススルー / largest / smallest / latest
+# size_policy = "client"
+
+# 実験的: SIZE_POLICY!=host でも host で端末ネイティブスクロールバック
+# host_flow_scrollback = false
+
+# ── nav-mode（過去ログスクロール）─────────────────────────
+# トグルキー。既定 Ctrl-\ (\x1c)。JIS/VSCode で出しにくいときに変更。
+# 形式: "ctrl-]" / "^]" / "\x1d" / "0x1d" / "29" / 生1文字
+# nav_key = "ctrl-\\"
+
+# ↑↓/j/k 1 回で動く行数（既定 1）。3 で 3 倍速。
+nav_scroll_step = 3
+
+# PageUp/PageDown 1 回で動く行数（既定 10。nav_scroll_step とは独立）。
+# nav_page_step = 10
+
+# nav-mode に入らずに PageUp/PageDown だけで過去ログをスクロール
+# （Ctrl-\ 不要）。カーソル移動・文字入力で自動的に live(最下部) 復帰。
+# host / tmux client 共通。既定 false。
+# pagekey_scroll = true
+
+# nav-mode に入らずマウスホイールで履歴を遡る（claude がマウスレポートを
+# 有効化しホイールのエスケープが端末に届く場合のみ機能。クリック/ドラッグ
+# は claude へ透過）。カーソル移動・文字入力で live 復帰。
+# wheel_scroll = true
+# nav_wheel_step = 3        # ホイール 1 ノッチの行数（既定 3）
+
+# ── セッション全文ログ（ファイル）─────────────────────────
+# claude のスクロールアウト確定行を逐次プレーンテキストでファイルへ追記し、
+# 終了時に最終可視画面まで吐き出す。ターミナル描画に触れないので live 破壊・
+# native scrollback の問題が一切無い（忠実モデルをそのまま転写。
+# Claude --resume の再ストリームは実出力どおり残る＝dedup はしない）。
+#   true            → ~/.claude-master/logs/session-<pid>.log に追記
+#   <パス>          → そのファイルへ追記（~ 展開可）
+#   ""(既定)/false  → 無効
+# session_log = true
+# session_log = "~/claude-session.log"

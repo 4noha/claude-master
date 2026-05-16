@@ -1,0 +1,8 @@
+{
+  "name": "resume-burst",
+  "source_pid": "5048",
+  "byte_range": [0, 90000],
+  "width": 164,
+  "height": 50,
+  "note": "claude --resume の会話履歴一括再描画バースト（重複 emit の再現用）"
+}

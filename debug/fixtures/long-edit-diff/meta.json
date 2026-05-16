@@ -1,0 +1,11 @@
+{
+  "name": "long-edit-diff",
+  "source_pid": "77814",
+  "byte_range": [
+    67000,
+    90000
+  ],
+  "width": 164,
+  "height": 50,
+  "note": "大規模 Edit/diff 連続ストリーム（行番号付き diff の幅変化・色付き出力）"
+}

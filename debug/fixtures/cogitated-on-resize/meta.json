@@ -1,0 +1,8 @@
+{
+  "name": "cogitated-on-resize",
+  "source": "cogitated-render fixture + resize injection",
+  "width": 164,
+  "height": 50,
+  "note": "mid-stream resize 注入で過去の cogitated-duplicate-on-resize バグ域を踏むことを想定したリグレッション fixture",
+  "resize_at": "40000:24x80"
+}

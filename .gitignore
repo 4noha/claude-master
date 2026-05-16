@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Claude Code
+.claude/
+
+# Runtime files
+*.log
+*.pid
+*.sock

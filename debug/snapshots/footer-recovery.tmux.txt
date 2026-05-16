@@ -1,0 +1,40 @@
+      r
+     a  o
+       r  i
+  *     o  n
+              f  t
+                                               25
+                                               63
+                                               73
+                                                7
+       row                                   ↑  19
+  ⏺
+       r  i                                      5
+  ⏺                        r  p
+                    3つの
+                              制約は
+                                          今回の
+                                                      変更で
+                                                                  なくなったのではないのですか
+                                                               ❯ 設計上の3つの制約は今回の変更でなくなったのではないので
+すか？
+                                                   * Narrowing footer keyword patterns…
+                                                                                                 ⎿  Next: Eliminate doub
+le _f nd_footer_start call per render cycle
+                             pa
+                             p  t
+                                  r  …
+                                   n
+  *
+     a
+    N  r
+          in  f
+            g  o
+                o  r
+                  e  k
+                        wo d
+                      e  o
+
+
+
+  *                                           thinking

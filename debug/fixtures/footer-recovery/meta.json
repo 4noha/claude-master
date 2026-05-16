@@ -1,0 +1,8 @@
+{
+  "name": "footer-recovery",
+  "source_pid": "9442",
+  "byte_range": [0, 60000],
+  "width": 164,
+  "height": 50,
+  "note": "起動・初期描画とフッターリセットの一連"
+}

@@ -1,0 +1,18 @@
+[project]
+name = "claude-master"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["psutil>=5.9", "pyte>=0.8"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["debug/tests"]
+markers = [
+    "legacy: 旧 reconstruction 経路（_extract/snapshot 等）の検証。raw passthrough 化で本番未使用。debug/replay 用に残置",
+]
